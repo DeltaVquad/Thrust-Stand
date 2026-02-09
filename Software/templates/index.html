@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plataforma de Empuxo - DeltaV</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Sansation:wght@400;700&display=swap');
+:root { 
+    --primary-color: #00205b; 
+    --rpm-color: #dc3545; 
+    --bg-color: #f4f7f6; 
+    --card-bg: #ffffff;
+}
+
+body { font-family: 'Sansation', sans-serif; background-color: var(--bg-color); margin: 0; color: #333; }
+
+header { background-color: #00102A; color: #fff; padding: 15px; text-align: center; box-shadow: 0 2px 10px rgba(0,0,0,0.2); }
+.logo { font-size: 1.5rem; font-weight: bold; letter-spacing: 1px; }
+
+/* O status agora tem uma transição suave de cor */
+#status { 
+    font-size: 0.9rem; 
+    margin-top: 8px; 
+    font-weight: bold; 
+    transition: color 0.5s ease;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.main-container { padding: 20px; max-width: 1400px; margin: 0 auto; }
+.dashboard { display: grid; grid-template-columns: 1fr; gap: 20px; }
+@media (min-width: 1000px) { .dashboard { grid-template-columns: 3fr 1fr; } }
+.chart-container { background-color: var(--card-bg); padding: 15px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); position: relative; height: 60vh; }
+.controls-container { display: flex; flex-direction: column; gap: 15px; }
+.card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.card { background-color: var(--card-bg); padding: 15px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); text-align: center; border-left: 5px solid var(--primary-color); }
+.card.rpm-card { border-left-color: var(--rpm-color); }
+.card h3 { margin: 0; font-size: 0.8rem; color: #666; text-transform: uppercase; }
+.card .value { margin: 5px 0 0 0; font-size: 1.6rem; font-weight: bold; color: #333; }
+.unit { font-size: 0.9rem; color: #888; font-weight: normal; }
+.button { background-color: var(--primary-color); color: #fff; border: none; padding: 12px; font-size: 1rem; border-radius: 6px; cursor: pointer; width: 100%; transition: 0.2s; }
+.button:hover { background-color: #003380; }
+.button-outline { background-color: transparent; border: 2px solid var(--primary-color); color: var(--primary-color); }
+.button-outline:hover { background-color: var(--primary-color); color: #fff; }
+footer { text-align: center; padding: 20px; margin-top: 20px; color: #888; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Plataforma de Testes - DeltaV</div>
+  <div id="status">Iniciando Sistema...</div>
+</header>
+
+<div class="main-container">
+  <div class="dashboard">
+    <div class="chart-container"><canvas id="dualAxisChart"></canvas></div>
+    <div class="controls-container">
+      <div class="card-grid">
+        <div class="card"><h3>Empuxo Atual</h3><p class="value"><span id="thrustVal">0.000</span> <span class="unit">kgf</span></p></div>
+        <div class="card"><h3>Empuxo Máx</h3><p class="value"><span id="maxThrustVal">0.000</span> <span class="unit">kgf</span></p></div>
+        <div class="card rpm-card"><h3>RPM Atual</h3><p class="value"><span id="rpmVal">0</span></p></div>
+        <div class="card rpm-card"><h3>RPM Máx</h3><p class="value"><span id="maxRpmVal">0</span></p></div>
+      </div>
+      <button class="button" onclick="resetData()">Zerar Máximos e Gráfico</button>
+      <button class="button button-outline" onclick="exportToCSV()">Baixar CSV</button>
+    </div>
+  </div>
+</div>
+
+<footer>&copy; 2026 DeltaV Drones | UPE</footer>
+
+<script>
+// --- Lógica do Gráfico (Chart.js) ---
+let maxThrust = 0.0, maxRpm = 0;
+let historyTime = [], historyThrust = [], historyRpm = [];
+const maxDataPoints = 100;
+
+const ctx = document.getElementById('dualAxisChart').getContext('2d');
+const chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+        labels: [],
+        datasets: [
+            { label: 'Empuxo (kgf)', data: [], borderColor: '#00205b', backgroundColor: 'rgba(0, 32, 91, 0.1)', yAxisID: 'y', tension: 0.3, borderWidth: 2, pointRadius: 0 },
+            { label: 'RPM', data: [], borderColor: '#dc3545', backgroundColor: 'rgba(220, 53, 69, 0.1)', yAxisID: 'y1', tension: 0.3, borderWidth: 2, pointRadius: 0, borderDash: [5, 5] }
+        ]
+    },
+    options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        scales: {
+            x: { display: false },
+            y: { type: 'linear', display: true, position: 'left', title: { display: true, text: 'Empuxo (kgf)', color: '#00205b' }, beginAtZero: true, suggestedMax: 0.2, },
+            y1: { type: 'linear', display: true, position: 'right', title: { display: true, text: 'RPM', color: '#dc3545' }, grid: { drawOnChartArea: false }, beginAtZero: true, suggestedMax: 200 }
+        }
+    }
+});
+
+function updateDashboard(time, thrust, rpm) {
+    document.getElementById('thrustVal').innerText = thrust.toFixed(3);
+    document.getElementById('rpmVal').innerText = rpm;
+
+    if (thrust > maxThrust) { maxThrust = thrust; document.getElementById('maxThrustVal').innerText = maxThrust.toFixed(3); }
+    if (rpm > maxRpm) { maxRpm = rpm; document.getElementById('maxRpmVal').innerText = maxRpm; }
+
+    chart.data.labels.push(time);
+    chart.data.datasets[0].data.push(thrust);
+    chart.data.datasets[1].data.push(rpm);
+    historyTime.push(time); historyThrust.push(thrust); historyRpm.push(rpm);
+
+    if (chart.data.labels.length > maxDataPoints) {
+        chart.data.labels.shift(); chart.data.datasets[0].data.shift(); chart.data.datasets[1].data.shift();
+    }
+    chart.update();
+}
+
+function resetData() {
+    maxThrust = 0; maxRpm = 0;
+    document.getElementById('maxThrustVal').innerText = "0.000"; document.getElementById('maxRpmVal').innerText = "0";
+    chart.data.labels = []; chart.data.datasets[0].data = []; chart.data.datasets[1].data = [];
+    historyTime = []; historyThrust = []; historyRpm = [];
+    chart.update();
+}
+
+function exportToCSV() {
+    let csv = "data:text/csv;charset=utf-8,Tempo,Empuxo(kgf),RPM\n";
+    for(let i=0; i<historyTime.length; i++) csv += `${historyTime[i]},${historyThrust[i].toFixed(4)},${historyRpm[i]}\n`;
+    const link = document.createElement("a"); link.href = encodeURI(csv); link.download = "dados_teste_deltav.csv"; link.click();
+}
+
+// --- WebSocket ---
+var socket = io();
+
+// 1. Recebe status do Python (Verde, Vermelho, Amarelo)
+socket.on('bridge_status', function(data) {
+    const statusDiv = document.getElementById('status');
+    statusDiv.innerText = data.msg;
+    statusDiv.style.color = data.color;
+});
+
+// 2. Fallback: Se perder conexão com o Python (servidor caiu)
+socket.on('disconnect', function() {
+    const statusDiv = document.getElementById('status');
+    statusDiv.innerText = "Conexão com Servidor Perdida!";
+    statusDiv.style.color = "#6c757d"; // Cinza
+});
+
+socket.on('update_sensor', function(data) {
+    const now = new Date().toLocaleTimeString();
+    updateDashboard(now, parseFloat(data.thrust), parseInt(data.rpm));
+});
+</script>
+</body>
+</html>

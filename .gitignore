@@ -1,0 +1,18 @@
+# --- PlatformIO / Arduino ---
+.pio/
+.vscode/
+*.elf
+*.bin
+*.hex
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+
+# --- Sistema Operacional ---
+.DS_Store
+Thumbs.db
