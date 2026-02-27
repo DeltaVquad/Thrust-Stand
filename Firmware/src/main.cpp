@@ -9,7 +9,7 @@
 
 // ======= Configurações Módulos =========
 // LoadCell
-#define HX711_DT  15
+#define HX711_DT  5
 #define HX711_SCK 18
 float fatorCalibracao = 94313.73; 
 
