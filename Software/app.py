@@ -1,94 +1,86 @@
 import serial
+import serial.tools.list_ports
 import json
 import time
 from flask import Flask, render_template
 from flask_socketio import SocketIO
 
-# --- CONFIGURAÇÕES ---
-SERIAL_PORT = 'COM3'   # <--- CONFIRA SUA PORTA
+# --- CONFIGURAÇÕES DINÂMICAS ---
+def find_esp32_port():
+    ports = serial.tools.list_ports.comports()
+    for p in ports:
+        # Busca pelo chip Silicon Labs do seu lsusb (10c4:ea60)
+        if "10c4:ea60" in p.hwid or "CP210" in p.description:
+            return p.device
+    return '/dev/ttyUSB0' # Fallback para Linux padrão
+
+SERIAL_PORT = find_esp32_port()
 BAUD_RATE = 115200
-THRESHOLD = 0.001      # Filtro de oscilação (Deadband)
-NEGATIVE_LIMIT = -0.4  # <--- LIMITE DE ALERTA NEGATIVO (kgf)
+THRESHOLD = 0.001
+NEGATIVE_LIMIT = -0.4
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'deltav_secret'
-socketio = SocketIO(app, cors_allowed_origins='*', async_mode=None)
+socketio = SocketIO(app, cors_allowed_origins='*', async_mode='eventlet')
 
 thread = None
 last_status = {'msg': 'Aguardando Servidor...', 'color': '#6c757d'} 
 last_valid_thrust = 0.0
-
-# Variável para controlar se estamos em modo de alerta (para não ficar mandando msg repetida)
 in_warning_state = False
 
 def broadcast_status(msg, color):
     global last_status
-    # Só imprime no terminal se a mensagem mudou (evita spam no log)
     if last_status['msg'] != msg:
         print(f"STATUS: {msg}")
-    
     last_status = {'msg': msg, 'color': color}
     socketio.emit('bridge_status', last_status)
 
 def background_thread():
     global last_valid_thrust, in_warning_state
     
-    broadcast_status(f"Procurando {SERIAL_PORT}...", "#ffc107")
-    
     while True:
         try:
+            broadcast_status(f"Conectando em {SERIAL_PORT}...", "#ffc107")
             ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
             ser.reset_input_buffer()
             broadcast_status("Sistema Online: ESP32 Conectado", "#28a745")
-            in_warning_state = False # Resetar estado de alerta ao conectar
             
             while True:
                 if ser.in_waiting > 0:
-                    try:
-                        line = ser.readline().decode('utf-8', errors='ignore').strip()
-                        
-                        if line.startswith('{') and line.endswith('}'):
+                    line = ser.readline().decode('utf-8', errors='ignore').strip()
+                    
+                    # LOG DE DIAGNÓSTICO: Verifique se isso aparece no terminal!
+                    if line:
+                        print(f"DEBUG RAW: {line}")
+                    
+                    if line.startswith('{') and line.endswith('}'):
+                        try:
                             data = json.loads(line)
-                            
-                            # --- 1. FILTRO DE ZONA MORTA ---
                             raw_thrust = float(data.get('thrust', 0))
                             
+                            # Filtro de Zona Morta
                             if abs(raw_thrust - last_valid_thrust) >= THRESHOLD:
                                 last_valid_thrust = raw_thrust
                             
                             data['thrust'] = last_valid_thrust
                             
-                            # --- 2. VERIFICAÇÃO DE SEGURANÇA (NEGATIVO) ---
-                            # Se o valor for muito negativo (ex: -0.45)
+                            # Segurança de limite negativo
                             if last_valid_thrust < NEGATIVE_LIMIT:
                                 if not in_warning_state:
                                     broadcast_status(f"ALERTA: IMPULSO NEGATIVO ({last_valid_thrust} kgf)", "#ff0000")
                                     in_warning_state = True
-                            
-                            # Se o valor estiver normal (ex: -0.1 ou 0.5)
                             else:
                                 if in_warning_state:
-                                    # Voltou ao normal, restaura mensagem verde
                                     broadcast_status("Sistema Online: ESP32 Conectado", "#28a745")
                                     in_warning_state = False
                             
                             socketio.emit('update_sensor', data)
-                    except:
-                        pass
-                        
+                        except json.JSONDecodeError:
+                            continue
                 socketio.sleep(0.01)
 
-        except serial.SerialException:
-            broadcast_status("ERRO: ESP32 Desconectado! Reconectando...", "#dc3545")
-            in_warning_state = False # Reseta estado
-            try:
-                ser.close()
-            except:
-                pass
-            socketio.sleep(2)
-
-        except Exception as e:
-            broadcast_status(f"Erro Interno: {str(e)}", "#dc3545")
+        except (serial.SerialException, OSError):
+            broadcast_status("ERRO: ESP32 Desconectado! Tentando reconectar...", "#dc3545")
             socketio.sleep(2)
 
 @app.route('/')
@@ -103,5 +95,5 @@ def connect():
         thread = socketio.start_background_task(background_thread)
 
 if __name__ == '__main__':
-    print(f"Iniciando DeltaV | Limite Negativo: {NEGATIVE_LIMIT} kgf")
-    socketio.run(app, debug=True, port=5000)
+    print(f"Iniciando DeltaV | Porta: {SERIAL_PORT}")
+    socketio.run(app, debug=True, port=5000, host='0.0.0.0')

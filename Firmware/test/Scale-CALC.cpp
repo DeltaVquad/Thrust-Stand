@@ -1,11 +1,11 @@
 #include "HX711.h"
 
-#define DT  18
-#define SCK 19
+#define DT  13
+#define SCK 18
 
 HX711 scale;
 
-float pesoConhecido = 0.0306; // <<< peso REAL em kg (ex: 0.500, 1.000)
+float pesoConhecido = 0.073; // <<< peso REAL em kg (ex: 0.500, 1.000)
 
 void setup() {
   Serial.begin(115200);
